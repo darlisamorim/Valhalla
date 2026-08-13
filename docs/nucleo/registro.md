@@ -132,3 +132,100 @@ reescrito para checar as classes instaladas, a seção `meilisearch` da config, 
 Breeze foi instalado na fundação sobre `User` / guard `web`. Os **três contextos de auth**
 (super-admin, lojista, cliente do storefront) ainda **não** estão separados — isso é núcleo
 (CLAUDE.md 5.9) e é a primeira tarefa da etapa 2. Registrado para não passar batido.
+
+---
+
+## Etapa 2 — Núcleo
+
+### 2.1 — Loja, resolvedor e isolamento
+
+**Data:** 2026-08-13
+
+#### Peças
+```
+app/Models/Loja.php                    model + fachada Loja::atual()
+app/Nucleo/Loja/ResolvedorDeLoja.php   contrato
+app/Nucleo/Loja/SingleStoreResolver.php driver de fábrica (single)
+app/Nucleo/Loja/NenhumaLojaConfigurada.php
+app/Nucleo/Loja/EscopoDeLoja.php       global scope por loja_id
+app/Nucleo/Loja/PertenceALoja.php      trait das entidades de negócio
+app/Providers/NucleoServiceProvider.php amarra o driver conforme STORE_MODE
+```
+Tabelas: `lojas`, `loja_modulos`.
+
+#### Decisão: `Loja::atual()` é método estático do próprio model
+O CLAUDE.md pede model `Loja` (5.1) **e** fachada `Loja::atual()` (5.2). Em vez de criar uma
+Facade separada (que exigiria alias e um segundo nome para a mesma coisa), o próprio model
+expõe `atual()`, delegando ao `ResolvedorDeLoja` do container. Um nome só, e o resto do
+sistema nunca vê o driver.
+
+#### Decisão: duas portas — `atual()` estoura, `atualOuNula()` não
+`Loja::atual(): Loja` lança `NenhumaLojaConfigurada` quando não há loja. Gravar dado sem
+loja, ou ler dado de "loja nenhuma", é vazamento de isolamento — tem que estourar alto.
+Quem sabe lidar com a ausência (instalador, painel mestre) chama `Loja::atualOuNula()`.
+
+#### Decisão: o escopo **fecha em caso de dúvida**
+`EscopoDeLoja` sem loja resolvida aplica `whereRaw('1 = 0')`: devolve **vazio**, não tudo.
+Vazar dado de uma loja para outra é o pior defeito possível nesta plataforma; devolver
+vazio é só um bug visível. Escape hatch explícito para o painel mestre:
+`->paraTodasAsLojas()` e `->daLoja($loja)`.
+
+Na criação é o oposto — se não há loja, **estoura** em vez de gravar `loja_id` nulo.
+
+#### Decisão: `TenancyResolver` referenciado por nome, não por import
+`NucleoServiceProvider` guarda o driver multi como string
+(`'App\Nucleo\Loja\TenancyResolver'`) e só resolve se `class_exists()`. Assim a build Loja
+Única **não contém** o código de multi-loja (CLAUDE.md 6) e ainda dá mensagem clara se
+alguém puser `STORE_MODE=multi` numa build que não tem o pacote privado.
+
+### 2.2 — Módulos e hooks
+
+#### Peças
+```
+app/Nucleo/Modulos/Modulo.php            enum nominal fechado
+app/Nucleo/Modulos/RegistroDeModulos.php quem está ligado nesta loja
+app/Models/LojaModulo.php
+app/Nucleo/Hooks/Hooks.php               casca sobre eventos do Laravel
+app/Nucleo/helpers.php                   registrar() / disparar()
+```
+
+#### Decisão: a lista de módulos é um enum, não string
+CLAUDE.md 4 diz que a lista é "fechada e nominal", sem categoria vaga. String solta convida
+a inventar módulo fantasma — e como plano comercial é combinação de módulos ligados (15),
+nome errado é plano errado. Enum `Modulo` com os 10 módulos nominais.
+
+#### Decisão a confirmar: `ecommerce` entrou no enum como *essencial*
+O CLAUDE.md lista o Ecommerce como **módulo** (18.3), mas ele **não** aparece na lista de
+liga/desliga que forma os planos (seção 4). Resolvi com um `essencial()` no enum:
+`ecommerce` está sempre ligado e não é comercializável (`Modulo::comercializaveis()` o
+exclui). Sem catálogo não sobra loja, então desligar não faria sentido.
+**Se a intenção era outra, é só mudar `essencial()` — nada mais depende disso.**
+
+#### Decisão: o liga/desliga é verificado no **disparo**, não no registro
+Os listeners são registrados normalmente (eventos nativos do Laravel). Quando o listener é
+registrado em nome de um módulo, ele é embrulhado num callback que consulta
+`RegistroDeModulos::estaAtivo()` **na hora do disparo**. Consequências:
+
+- o lojista desliga o módulo no painel e o efeito é imediato, sem reboot nem cache de
+  listener;
+- o mesmo listener roda numa loja e não roda na outra (o liga/desliga é por loja);
+- desligar módulo **não** remove o evento: o disparo continua, sem ninguém escutando —
+  exatamente o que o CLAUDE.md 5.3 pede.
+
+`RegistroDeModulos` memoiza os módulos ativos por loja na requisição, porque isso é
+consultado a cada disparo de hook.
+
+#### Verificação
+`tests/Feature/Nucleo/` — 3 arquivos:
+
+- `LojaAtualTest` — driver de fábrica, memoização, `tornarAtual()`, `esquecer()`, exceção
+  sem loja, seeder idempotente;
+- `EscopoDeLojaTest` — usa uma entidade de mentira (`itens_de_teste`) de propósito: o trait
+  tem que servir a qualquer entidade que um módulo venha a criar. Cobre isolamento entre
+  duas lojas, preenchimento automático de `loja_id`, fail-closed sem loja, e os dois escape
+  hatches;
+- `ModulosEHooksTest` — lista nominal sem "outros", carrinho/checkout/cache/SEO **fora** da
+  lista de módulos, liga/desliga por loja, e o **teste obrigatório**: desligar módulo
+  silencia o listener e o disparo continua funcionando.
+
+Suíte completa: **62 testes, 135 asserções, verde**.

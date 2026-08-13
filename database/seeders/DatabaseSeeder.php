@@ -15,7 +15,9 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
-        // User::factory(10)->create();
+        // A loja única vem primeiro: sem ela, Loja::atual() não resolve e nada com
+        // escopo de loja pode ser criado.
+        $this->call(LojaPadraoSeeder::class);
 
         User::factory()->create([
             'name' => 'Test User',
