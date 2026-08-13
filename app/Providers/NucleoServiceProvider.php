@@ -6,6 +6,9 @@ use App\Nucleo\Hooks\Hooks;
 use App\Nucleo\Loja\ResolvedorDeLoja;
 use App\Nucleo\Loja\SingleStoreResolver;
 use App\Nucleo\Modulos\RegistroDeModulos;
+use App\Nucleo\Tema\ConfiguracaoDeTema;
+use App\Nucleo\Tema\MotorDeTema;
+use App\Nucleo\Tema\RepositorioDeTemas;
 use Illuminate\Support\ServiceProvider;
 use RuntimeException;
 
@@ -40,6 +43,12 @@ class NucleoServiceProvider extends ServiceProvider
 
         $this->app->singleton(RegistroDeModulos::class);
         $this->app->singleton(Hooks::class);
+
+        // Motor de tema (CLAUDE.md 7). Singletons porque memoizam descoberta de tema em
+        // disco — isso é lido em toda renderização de página.
+        $this->app->singleton(RepositorioDeTemas::class);
+        $this->app->singleton(ConfiguracaoDeTema::class);
+        $this->app->singleton(MotorDeTema::class);
     }
 
     protected function resolvedorMulti(): ResolvedorDeLoja

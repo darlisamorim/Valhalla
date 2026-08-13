@@ -229,3 +229,67 @@ consultado a cada disparo de hook.
   silencia o listener e o disparo continua funcionando.
 
 Suíte completa: **62 testes, 135 asserções, verde**.
+
+### 2.3 — Motor de tema (ponte do Liquid)
+
+#### Peças
+```
+config/tema.php                          raiz dos temas, tema padrão, nomes de pasta
+app/Nucleo/Tema/Tema.php                 o que o tema TEM (templates, seções, tokens)
+app/Nucleo/Tema/RepositorioDeTemas.php   descobre temas, resolve o tema da loja
+app/Nucleo/Tema/ConfiguracaoDeTema.php   customização do lojista (banco)
+app/Nucleo/Tema/Secao.php               seção posicionada: tipo, ativa, config
+app/Nucleo/Tema/MotorDeTema.php          layout + template + sections
+app/Nucleo/Tema/Drops/LojaDrop.php       primeiro drop
+```
+
+#### Como a composição funciona
+As seções ativas do template são renderizadas na ordem do lojista e entregues ao template
+em `content_for_sections`; o template renderizado é entregue ao layout em
+`content_for_layout`. Um `index.liquid` que só tem `{{ content_for_sections }}` dá ao
+lojista controle total da home só reordenando blocos, sem tocar em código (CLAUDE.md 7.5).
+
+#### Descoberta: o keepsuit/liquid resolve template pelo view finder do Laravel
+`LiquidCompiler::getPathFromTemplateName()` chama `View::getFinder()->find()`. Isso decidiu
+o desenho: em vez de ler o arquivo do tema na mão e usar `parseString` (o que quebraria
+`{% render %}` dentro do tema e perderia o cache de template compilado), o motor **põe o
+diretório do tema na frente das view paths** durante o render.
+
+Efeito colateral a controlar: view path é estado global. `comOTemaAtivo()` salva as paths,
+troca, renderiza e **devolve as originais num `finally`** — inclusive quando dá exceção.
+Sem isso, um render contaminaria o próximo (grave no SaaS e em worker de fila, onde vários
+temas passam pelo mesmo processo). Tem teste para os dois caminhos, com e sem exceção.
+
+#### Decisão: o tema declara a ordem padrão das seções em `config/secoes.json`
+O CLAUDE.md 7.3 define `config/settings.json` para tokens, mas não diz onde vive a ordem
+padrão das seções. Sem isso, instalação nova abriria a home vazia. Então o tema declara
+`config/secoes.json` (`{"index": ["banner", "destaques"]}`) e o lojista sobrescreve pelo
+painel; o que ele salva vai para `lojas.configuracoes.secoes`.
+
+#### Decisão: seção que não existe no tema é ignorada em silêncio
+Trocar de tema não pode derrubar a loja. Se o arranjo salvo cita uma seção que o tema novo
+não tem, ela é filtrada — a página sai sem aquele bloco em vez de estourar.
+
+#### Como o drop trava o acesso (regra de ouro 5)
+O `Drop` do keepsuit expõe ao Liquid **apenas propriedades públicas e métodos públicos sem
+argumento**. `LojaDrop` guarda o model numa propriedade `protected #[Hidden]` e publica
+três métodos (`nome`, `slug`, `url`), cada um com `#[Cache]`. Teste explícito garante que
+`$drop->toArray()` devolve exatamente `['nome','slug','url']` — se alguém publicar um
+método por descuido, o teste quebra.
+
+`ProdutoDrop`, `ColecaoDrop` e `ClienteDrop` **não** entram aqui: pertencem ao módulo
+Ecommerce (etapa 3), que é quem declara os drops que expõe (CLAUDE.md 14). `CarrinhoDrop`
+vem com o carrinho/checkout, que é núcleo e ainda não foi construído.
+
+#### Decisão de escopo: nenhum tema de verdade foi criado
+O tema default é a **etapa 4** do CLAUDE.md. O motor é testado contra dois temas de mentira
+em `tests/fixtures/themes/`. `storage/themes/` está vazio de propósito — e é por isso que
+a rota `/` do storefront ainda é a página padrão do Laravel, não o motor de tema.
+
+#### Verificação
+`tests/Feature/Nucleo/MotorDeTemaTest.php` — 20 testes: composição layout/template/seções,
+ordem do lojista sobrepondo a do tema, seção desligada, config por seção, seção fantasma
+ignorada, render de seção isolada (para AJAX), tokens com sobrescrita campo a campo, o
+whitelist do drop, troca de tema, e as view paths voltando ao normal com e sem exceção.
+
+Suíte completa: **82 testes, 167 asserções, verde**.
